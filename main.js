@@ -2,6 +2,7 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, Tray } = require('electron');
 const path = require('path');
 const Store = require('electron-store');
 const { shell } = require('electron')
+const { notify } = require('./js/notification');
 const { savePreferences } = require('./js/UserPreferences.js');
 
 let savedPreferences = null;
@@ -16,7 +17,7 @@ let tray;
 const store = new Store();
 const macOS = process.platform === 'darwin';
 var iconpath = path.join(__dirname, macOS ? 'assets/timer.png' : 'assets/timer.ico');
-var trayIcon = path.join(__dirname, macOS ? 'assets/timer-16.png' : 'assets/timer.ico');
+var trayIcon = path.join(__dirname, macOS ? 'assets/timer-16-Template.png' : 'assets/timer-grey.ico');
 
 function createWindow () {
   // Create the browser window.
@@ -161,6 +162,14 @@ function createWindow () {
 
     tray = new Tray(trayIcon);
     var contextMenu = Menu.buildFromTemplate([
+        {
+            label: 'Punch in time', click: function () {
+                var now = new Date();
+
+                win.webContents.executeJavaScript('punchDate()');
+                notify(`Punched time ${now.getHours()}:${now.getMinutes()}`);
+            }
+        },
         {
             label: 'Show App', click: function () {
                 win.show();
