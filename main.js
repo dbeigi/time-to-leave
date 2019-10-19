@@ -13,6 +13,7 @@ ipcMain.on('PREFERENCE_SAVE_DATA_NEEDED', (event, preferences) => {
 // be closed automatically when the JavaScript object is garbage collected.
 let win;
 let tray;
+let secondWindow;
 const store = new Store();
 const macOS = process.platform === 'darwin';
 var iconpath = path.join(__dirname, macOS ? 'assets/timer.png' : 'assets/timer.ico');
@@ -121,8 +122,38 @@ function createWindow () {
                     }
                 }
             ]
+        },
+        {
+            label: 'Help',
+            submenu: [
+                {
+                    label: 'TTL GitHub',
+                    click () {
+                        secondWindow = new BrowserWindow(WindowOptions);
+                        secondWindow.loadURL('https://github.com/thamara/time-to-leave');
+                        secondWindow.show();
+                    }
+                },
+                {
+                    label: 'Latest releases',
+                    click () {
+                        secondWindow = new BrowserWindow(WindowOptions);
+                        secondWindow.loadURL('https://github.com/thamara/time-to-leave/releases');
+                        secondWindow.show();
+                    }
+                }
+            ]
         }
     ]);
+    
+    var WindowOptions = {
+        width: 1000,
+        height: 800,
+        icon: iconpath,
+        webPreferences: {
+            nodeIntegration: true
+        }
+    };
 
     win = new BrowserWindow({
         width: 1000,
