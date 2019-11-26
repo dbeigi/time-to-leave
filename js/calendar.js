@@ -10,12 +10,19 @@ const {
     sumTime,
     validateTime,
     hourToMinutes
-} = require('./js/time_math.js');
-const { notifyUser } = require('./js/notification.js');
-const { getUserPreferences } = require('./js/UserPreferences.js');
+} = require('./js/time-math.js');
+const { notify } = require('./js/notification.js');
+const { getUserPreferences, showDay } = require('./js/user-preferences.js');
+const { applyTheme } = require('./js/themes.js');
+const {
+    formatDayId,
+    sendWaiverDay,
+    displayWaiverWindow
+} = require('./js/workday-waiver-aux.js');
 
 // Global values for calendar
 const store = new Store();
+const waivedWorkdays = new Store({name: 'waived-workdays'});
 let preferences = getUserPreferences();
 let calendar = null;
 
@@ -25,13 +32,14 @@ let calendar = null;
 ipcRenderer.on('PREFERENCE_SAVED', function (event, inputs) {
     preferences = inputs;
     calendar.redraw();
+    applyTheme(preferences.theme);
 });
 
 /*
  * Returns true if the notification is enabled in preferences.
  */
 function notificationIsEnabled() {
-    return preferences['notification'] == 'enabled';
+    return preferences['notification'] === 'enabled';
 }
 
 /*
@@ -68,29 +76,6 @@ function hasInputError(dayBegin, lunchBegin, lunchEnd, dayEnd) {
 }
 
 /*
- * Returns true if we should display week day.
- */
-function showWeekDay(weekDay) {
-    switch (weekDay) {
-    case 0: return preferences['working-days-sunday'];
-    case 1: return preferences['working-days-monday'];
-    case 2: return preferences['working-days-tuesday'];
-    case 3: return preferences['working-days-wednesday'];
-    case 4: return preferences['working-days-thursday'];
-    case 5: return preferences['working-days-friday'];
-    case 6: return preferences['working-days-saturday'];
-    }
-}
-
-/*
- * Returns true if we should display day.
- */
-function showDay(year, month, day)  {
-    var currentDay = new Date(year, month, day), weekDay = currentDay.getDay();
-    return showWeekDay(weekDay);
-}
-
-/*
  * Display next month of the calendar.
  */
 function nextMonth() {
@@ -119,24 +104,24 @@ function punchDate() {
         hour = now.getHours(),
         min = now.getMinutes();
 
-    if (calendar.getMonth() != month ||
-        calendar.getYear() != year ||
+    if (calendar.getMonth() !== month ||
+        calendar.getYear() !== year ||
         !showDay(year, month, day)) {
         return;
     }
 
     var dayStr = year + '-' + month + '-' + day + '-';
     var entry = '';
-    if (document.getElementById(dayStr + 'day-end').value == '') {
+    if (document.getElementById(dayStr + 'day-end').value === '') {
         entry = 'day-end';
     }
-    if (document.getElementById(dayStr + 'lunch-end').value == '') {
+    if (document.getElementById(dayStr + 'lunch-end').value === '') {
         entry = 'lunch-end';
     }
-    if (document.getElementById(dayStr + 'lunch-begin').value == '') {
+    if (document.getElementById(dayStr + 'lunch-begin').value === '') {
         entry = 'lunch-begin';
     }
-    if (document.getElementById(dayStr + 'day-begin').value == '') {
+    if (document.getElementById(dayStr + 'day-begin').value === '') {
         entry = 'day-begin';
     }
     if (entry.length <= 0) {
@@ -171,7 +156,7 @@ class Calendar {
      * Display next month.
      */
     nextMonth() {
-        if (this.month == 11) {
+        if (this.month === 11) {
             this.month = 0;
             this.year += 1;
         } else {
@@ -184,7 +169,7 @@ class Calendar {
      * Display previous month.
      */
     prevMonth() {
-        if (this.month == 0) {
+        if (this.month === 0) {
             this.month = 11;
             this.year -= 1;
         } else {
@@ -211,8 +196,10 @@ class Calendar {
 
         if (!showDay(this.today.getFullYear(), this.today.getMonth(), this.today.getDate())) {
             document.getElementById('punch-button').disabled = true;
+            ipcRenderer.send('TOGGLE_TRAY_PUNCH_TIME', false);
         } else {
             document.getElementById('punch-button').disabled = false;
+            ipcRenderer.send('TOGGLE_TRAY_PUNCH_TIME', true);
         }
 
         this.updateLeaveBy();
@@ -234,6 +221,13 @@ class Calendar {
 
         $('#current-month').on('click', function() {
             goToCurrentDate();
+        });
+
+        $('.waiver-trigger').on('click', function() {
+            const dayId = $(this).closest('tr').attr('id').substr(3);
+            const waiverDay = formatDayId(dayId);
+            sendWaiverDay(waiverDay);
+            displayWaiverWindow();
         });
     }
 
@@ -282,8 +276,8 @@ class Calendar {
             if (!showDay(this.year, this.month, day)) {
                 continue;
             }
-            var d = new Date(this.year, this.month, day);
-            if (d > now) {
+            var isToday = (now.getDate() === day && now.getMonth() === this.month && now.getFullYear() === this.year);
+            if (isToday) {
                 //balance considers only up until yesterday
                 break;
             }
@@ -301,9 +295,12 @@ class Calendar {
         var monthTotalToWork = multiplyTime(getHoursPerDay(), workingDaysToCompute * -1);
         var balance = sumTime(monthTotalToWork, monthTotalWorked);
         var balanceElement = document.getElementById('month-balance');
-        balanceElement.value = balance;
-        balanceElement.classList.remove('text-success', 'text-danger');
-        balanceElement.classList.add(isNegative(balance) ? 'text-danger' : 'text-success');
+        if (balanceElement)
+        {
+            balanceElement.value = balance;
+            balanceElement.classList.remove('text-success', 'text-danger');
+            balanceElement.classList.add(isNegative(balance) ? 'text-danger' : 'text-success');
+        }
     }
 
     /*
@@ -317,23 +314,54 @@ class Calendar {
             if (!showDay(this.year, this.month, day)) {
                 continue;
             }
-            this.workingDays += 1;
+
+            var currentDay = new Date(this.year, this.month, day),
+                dateStr = currentDay.toISOString().substr(0, 10);
+
+            var dayTotal = null;
             var dayStr = this.year + '-' + this.month + '-' + day + '-';
-            var lunchBegin = this._setData(dayStr + 'lunch-begin');
-            var lunchEnd = this._setData(dayStr + 'lunch-end');
-            /*var lunchTotal = */this._setData(dayStr + 'lunch-total');
-            var dayBegin = this._setData(dayStr + 'day-begin');
-            var dayEnd = this._setData(dayStr + 'day-end');
-            var dayTotal = this._setData(dayStr + 'day-total');
+            if (waivedWorkdays.has(dateStr)) {
+                var waivedInfo = waivedWorkdays.get(dateStr);
+                var waivedDayTotal = waivedInfo['hours'];
+                document.getElementById(dayStr + 'day-total').value = waivedDayTotal;
+                dayTotal = waivedDayTotal;
+            } else {
+                var lunchBegin = this._setData(dayStr + 'lunch-begin');
+                var lunchEnd = this._setData(dayStr + 'lunch-end');
+                this._setData(dayStr + 'lunch-total');
+                var dayBegin = this._setData(dayStr + 'day-begin');
+                var dayEnd = this._setData(dayStr + 'day-end');
+                dayTotal = this._setData(dayStr + 'day-total');
+
+                colorErrorLine(this.year, this.month, day, dayBegin, lunchBegin, lunchEnd, dayEnd);
+            }
+
+            var isToday = (this.today.getDate() === day && this.today.getMonth() === this.month && this.today.getFullYear() === this.year);
+            if (isToday) {
+                break;
+            }
 
             if (dayTotal) {
                 monthTotal = sumTime(monthTotal, dayTotal);
             }
 
-            colorErrorLine(this.year, this.month, day, dayBegin, lunchBegin, lunchEnd, dayEnd);
+            this.workingDays += 1;
         }
-        document.getElementById('month-total').value = monthTotal;
-        document.getElementById('month-working-days').value = this.workingDays;
+        var monthDayInput = document.getElementById('month-day-input');
+        if (monthDayInput)
+        {
+            monthDayInput.value = this._getBalanceRowPosition();
+        }
+        var monthDayTotal = document.getElementById('month-total');
+        if (monthDayTotal)
+        {
+            monthDayTotal.value = monthTotal;
+        }
+        var monthWorkingDays = document.getElementById('month-working-days');
+        if (monthWorkingDays)
+        {
+            monthWorkingDays.value = this.workingDays;
+        }
         this.updateBalance();
 
         this.updateLeaveBy();
@@ -344,8 +372,8 @@ class Calendar {
      */
     updateLeaveBy() {
         if (!showDay(this.today.getFullYear(), this.today.getMonth(), this.today.getDate()) ||
-            this.today.getMonth() != this.getMonth() ||
-            this.today.getFullYear() != this.getYear()) {
+            this.today.getMonth() !== this.getMonth() ||
+            this.today.getFullYear() !== this.getYear()) {
             return;
         }
         var [dayBegin, lunchBegin, lunchEnd, dayEnd] = getDaysEntriesFromHTML(this.today.getFullYear(), this.today.getMonth(), this.today.getDate());
@@ -364,8 +392,10 @@ class Calendar {
         if (dayBegin.length && lunchBegin.length && lunchEnd.length && dayEnd.length) {
             //All entries computed
             document.getElementById('punch-button').disabled = true;
+            ipcRenderer.send('TOGGLE_TRAY_PUNCH_TIME', false);
         } else {
             document.getElementById('punch-button').disabled = false;
+            ipcRenderer.send('TOGGLE_TRAY_PUNCH_TIME', true);
         }
     }
 
@@ -412,16 +442,35 @@ class Calendar {
                    '</tr>';
         return code;
     }
+    
+    /*
+     * Returns the html code for the row with workng days, month total and balance
+     */
+    static _getBalanceRowCode () {
+        return '<tr>' +
+              '<tr class="month-total-row">' +
+                  '<td class="month-total-text" title="Last day used for balance">On</td>' +
+                  '<td class="month-total-time" title="Last day used for balance"><input type="text" id="month-day-input" size="2" disabled></td>' +
+                  '<td class="month-total-text" title="How many working days there\'s in the month">Working days</td>' +
+                  '<td class="month-total-time" title="How many working days there\'s in the month"><input type="text" id="month-working-days" size="5" disabled></td>' +
+                  '<td class="month-total-text" title="How many hours you logged in this month">Month Sum</td>' +
+                  '<td class="month-total-time" title="How many hours you logged in this month"><input type="text" id="month-total" size="8" disabled></td>' +
+                  '<td class="month-total-text" title="Balance up until today for this month. A positive balance means extra hours you don\'t need to work today (or the rest of the month).">Month Balance</td>' +
+                  '<td class="month-total-time" title="Balance up until today for this month. A positive balance means extra hours you don\'t need to work today (or the rest of the month)."><input type="text" id="month-balance" size="8" disabled></td>' +
+                '</tr>' +
+            '</tr>';
+    }
 
     /*
      * Returns the code of a calendar row
      */
-    _getInputsRowCode (year, month, day) {
+    _getInputsRowCode (year, month, day, balanceRowPosition) {
         var currentDay = new Date(year, month, day),
             weekDay = currentDay.getDay(),
             today = new Date(),
-            isToday = (today.getDate() == day && today.getMonth() == month && today.getFullYear() == year),
-            trID = ('tr-' + year + '-' + month + '-' + day);
+            isToday = (today.getDate() === day && today.getMonth() === month && today.getFullYear() === year),
+            trID = ('tr-' + year + '-' + month + '-' + day),
+            dateStr = currentDay.toISOString().substr(0, 10);
 
         if (!showDay(year, month, day)) {
             if (preferences['hide-non-working-days']) {
@@ -436,10 +485,26 @@ class Calendar {
             }
         }
 
-        var htmlCode =
+        if (waivedWorkdays.has(dateStr)) {
+            var waivedInfo = waivedWorkdays.get(dateStr);
+            var summaryStr = '<b>Waived day: </b>' + waivedInfo['reason'];
+            var waivedLineHtmlCode =
                  '<tr'+ (isToday ? ' class="isToday"' : '') + ' id="' + trID + '">' +
                     '<td class="weekday ti">' + this.options.weekabbrs[weekDay] + '</td>' +
                     '<td class="day ti">' + day + '</td>' +
+                    '<td class="waived-day-text" colspan="5">' + summaryStr + '</td>' +
+                    '<td class="ti ti-total">' + Calendar._getTotalCode(year, month, day, 'day-total') + '</td>' +
+                '</tr>\n';
+            return waivedLineHtmlCode;
+        } 
+
+        var htmlCode =
+                 '<tr'+ (isToday ? ' class="isToday"' : '') + ' id="' + trID + '">' +
+                    '<td class="weekday waiver-trigger ti" title="Add a waiver for this day">' + this.options.weekabbrs[weekDay] + '</td>' +
+                    '<td class="day ti">' + 
+                        '<span class="day-number"> ' + day + ' </span>' +
+                        '<img src="assets/waiver.svg" height="15" class="waiver-img">' + 
+                    '</td>' +
                     '<td class="ti">' + Calendar._getInputCode(year, month, day, 'day-begin') + '</td>' +
                     '<td class="ti">' + Calendar._getInputCode(year, month, day, 'lunch-begin') + '</td>' +
                     '<td class="ti ti-total">' + Calendar._getTotalCode(year, month, day, 'lunch-total') + '</td>' +
@@ -447,6 +512,10 @@ class Calendar {
                     '<td class="ti">' + Calendar._getInputCode(year, month, day, 'day-end') + '</td>' +
                     '<td class="ti ti-total">' + Calendar._getTotalCode(year, month, day, 'day-total') + '</td>' +
                 '</tr>\n';
+
+        if (day === balanceRowPosition) {
+            htmlCode += Calendar._getBalanceRowCode();
+        }
 
         if (isToday) {
             htmlCode += Calendar._getSummaryRowCode();
@@ -459,7 +528,7 @@ class Calendar {
      * Returns the header of the page, with the image, name and a message.
      */
     _getPageHeader (year, month) {
-        var todayBut = '<input id="current-month" type="image" src="assets/calendar.svg" alt="Current Month" height="24" width="24"></input>';
+        var todayBut = '<input id="current-month" type="image" src="assets/calendar.svg" alt="Current Month" title="Go to Current Month" height="24" width="24"></input>';
         var leftBut = '<input id="prev-month" type="image" src="assets/left-arrow.svg" alt="Previous Month" height="24" width="24"></input>';
         var ritghBut = '<input id="next-month" type="image" src="assets/right-arrow.svg" alt="Next Month" height="24" width="24"></input>';
         return '<div class="title-header">'+
@@ -491,6 +560,24 @@ class Calendar {
                 '</tr>' +
                 '</thead>\n';
     }
+    
+    /*
+     * Returns the last valid day before the current one, to print the balance row
+     */
+    _getBalanceRowPosition() {
+        if (this.year !== this.today.getFullYear() || this.month !== this.today.getMonth()) {
+            return this.getMonthLength();
+        }
+
+        var balanceRowPosition = 0;
+        for (var day = 1; day < this.today.getDate(); ++day) {
+            if (showDay(this.year, this.month, day)) {
+                balanceRowPosition = day;
+            }
+        }
+        
+        return balanceRowPosition;
+    }
 
     /*
      * Returns the code of the body of the page.
@@ -501,8 +588,10 @@ class Calendar {
         html += this._getPageHeader(this.year, this.month);
         html += '<table class="table-body">';
         html += this._getTableHeaderCode();
+        var balanceRowPosition = this._getBalanceRowPosition();
+        
         for (var day = 1; day <= monthLength; ++day) {
-            html += this._getInputsRowCode(this.year, this.month, day);
+            html += this._getInputsRowCode(this.year, this.month, day, balanceRowPosition);
         }
         html += '</table><br>';
         html += '</div>';
@@ -627,7 +716,7 @@ function updateTimeDayCallback(key, value) {
  * Notify user if it's time to leave
  */
 function notifyTimeToLeave() {
-    if (!notificationIsEnabled() || document.getElementById('leave-by') == null) {
+    if (!notificationIsEnabled() || document.getElementById('leave-by') === null) {
         return;
     }
 
@@ -643,10 +732,10 @@ function notifyTimeToLeave() {
 
         // Let check if it's past the time to leave, and the minutes line up with the interval to check
         var minutesDiff = hourToMinutes(subtractTime(timeToLeave, curTime));
-        var isRepeatingInterval = curTime > timeToLeave && (minutesDiff % notificationInterval == 0);
+        var isRepeatingInterval = curTime > timeToLeave && (minutesDiff % notificationInterval === 0);
 
-        if (curTime == timeToLeave || isRepeatingInterval) {
-            notifyUser();
+        if (curTime === timeToLeave || isRepeatingInterval) {
+            notify('Hey there! I think it\'s time to leave.');
         }
     }
 }
@@ -655,4 +744,6 @@ function notifyTimeToLeave() {
 $(() => {
     calendar = new Calendar();
     setInterval(notifyTimeToLeave, 60000);
+    let prefs = getUserPreferences();
+    applyTheme(prefs.theme);
 });

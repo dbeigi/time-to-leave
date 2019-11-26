@@ -82,6 +82,16 @@ function validateTime(time) {
     return re.test(time);
 }
 
+/**
+ * Get a difference between two dates.
+ * date1, or date2 should be javascript Date instance.
+ * @return Number
+ */
+function diffDays(date1, date2) {
+    const diffTime = date2 - date1;
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+}
+
 module.exports = {
     hourMinToHourFormated,
     isNegative,
@@ -90,5 +100,6 @@ module.exports = {
     subtractTime,
     sumTime,
     validateTime,
-    hourToMinutes
+    hourToMinutes,
+    diffDays
 };
